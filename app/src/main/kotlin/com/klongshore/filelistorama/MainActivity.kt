@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.ui.Modifier
+import com.klongshore.filelistorama.ui.access.StorageAccessGate
 import com.klongshore.filelistorama.ui.browser.BrowserScreen
 import com.klongshore.filelistorama.ui.theme.FileListoramaTheme
 import dagger.hilt.android.AndroidEntryPoint
@@ -20,7 +21,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             FileListoramaTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
-                    BrowserScreen(Modifier.padding(padding))
+                    StorageAccessGate(Modifier.padding(padding)) {
+                        BrowserScreen(Modifier.padding(padding))
+                    }
                 }
             }
         }
