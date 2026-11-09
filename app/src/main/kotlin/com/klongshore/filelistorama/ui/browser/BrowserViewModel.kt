@@ -1,10 +1,12 @@
 package com.klongshore.filelistorama.ui.browser
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.klongshore.filelistorama.domain.BrowserPreferences
 import com.klongshore.filelistorama.domain.Entry
 import com.klongshore.filelistorama.domain.EntryKind
+import com.klongshore.filelistorama.domain.FileRef
 import com.klongshore.filelistorama.domain.FileResult
 import com.klongshore.filelistorama.domain.FileSource
 import com.klongshore.filelistorama.domain.SortKey
@@ -24,18 +26,27 @@ import javax.inject.Inject
 class BrowserViewModel @Inject constructor(
     private val source: FileSource,
     private val prefs: BrowserPreferences,
+    private val savedState: SavedStateHandle,
 ) : ViewModel() {
 
-    private val crumbs = MutableStateFlow(listOf(Crumb(source.root, source.displayName)))
+    private val crumbs = MutableStateFlow(restoreCrumbs())
 
     /** What the source returned for the current folder, before sorting and filtering. */
     private val rawListing = MutableStateFlow<Listing>(Listing.Loading)
 
-    val state: StateFlow<BrowserState> = combine(crumbs, rawListing, prefs.settings) { crumbs, raw, settings ->
+    private val refreshing = MutableStateFlow(false)
+
+    val state: StateFlow<BrowserState> = combine(
+        crumbs,
+        rawListing,
+        refreshing,
+        prefs.settings,
+    ) { crumbs, raw, refreshing, settings ->
         BrowserState(
             crumbs = crumbs,
             listing = if (raw is Listing.Loaded) Listing.Loaded(raw.entries.arranged(settings)) else raw,
             settings = settings,
+            isRefreshing = refreshing,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -52,14 +63,14 @@ class BrowserViewModel @Inject constructor(
     /** Opens [entry] if it is a folder; files are ignored here. */
     fun open(entry: Entry) {
         if (entry.kind != EntryKind.Folder) return
-        crumbs.update { it + Crumb(entry.ref, entry.name) }
+        setCrumbs(crumbs.value + Crumb(entry.ref, entry.name))
         loadCurrent()
     }
 
     /** Jumps back to the breadcrumb at [index]. Indexes outside the earlier levels are ignored. */
     fun navigateTo(index: Int) {
         if (index !in 0 until crumbs.value.lastIndex) return
-        crumbs.update { it.take(index + 1) }
+        setCrumbs(crumbs.value.take(index + 1))
         loadCurrent()
     }
 
@@ -69,6 +80,11 @@ class BrowserViewModel @Inject constructor(
         if (depth <= 1) return false
         navigateTo(depth - 2)
         return true
+    }
+
+    /** Rereads the current folder, keeping the old listing on screen until the new one arrives. */
+    fun refresh() {
+        loadCurrent(keepListing = true)
     }
 
     fun setSort(key: SortKey, ascending: Boolean) = updateSettings {
@@ -81,9 +97,14 @@ class BrowserViewModel @Inject constructor(
         viewModelScope.launch { prefs.update(transform) }
     }
 
-    private fun loadCurrent() {
+    private fun loadCurrent(keepListing: Boolean = false) {
         loadJob?.cancel()
-        rawListing.value = Listing.Loading
+        if (keepListing) {
+            refreshing.value = true
+        } else {
+            refreshing.value = false
+            rawListing.value = Listing.Loading
+        }
         val folder = crumbs.value.last().ref
         loadJob = viewModelScope.launch {
             rawListing.value = when (val result = source.list(folder)) {
@@ -92,7 +113,31 @@ class BrowserViewModel @Inject constructor(
                 FileResult.NotFound -> Listing.Failed(Failure.NotFound)
                 is FileResult.Io -> Listing.Failed(Failure.Io)
             }
+            refreshing.value = false
         }
+    }
+
+    private fun setCrumbs(next: List<Crumb>) {
+        crumbs.value = next
+        // Saved as plain string lists so they survive process death.
+        savedState[KEY_IDS] = ArrayList(next.map { it.ref.itemId })
+        savedState[KEY_NAMES] = ArrayList(next.map { it.name })
+    }
+
+    /** Rebuilds the breadcrumb trail saved before the process died, or starts at the root. */
+    private fun restoreCrumbs(): List<Crumb> {
+        val root = Crumb(source.root, source.displayName)
+        val ids = savedState.get<ArrayList<String>>(KEY_IDS)
+        val names = savedState.get<ArrayList<String>>(KEY_NAMES)
+        val valid = ids != null && names != null && ids.size == names.size &&
+            ids.isNotEmpty() && ids.first() == source.root.itemId
+        if (!valid) return listOf(root)
+        return ids!!.zip(names!!) { id, name -> Crumb(FileRef(source.root.sourceId, id), name) }
+    }
+
+    private companion object {
+        const val KEY_IDS = "crumb_ids"
+        const val KEY_NAMES = "crumb_names"
     }
 
     /** Hides hidden files unless asked, puts folders first, then orders each group by [ViewSettings]. */

@@ -19,4 +19,5 @@ data class BrowserState(
     val crumbs: List<Crumb>,
     val listing: Listing,
     val settings: ViewSettings = ViewSettings(),
+    val isRefreshing: Boolean = false,
 )

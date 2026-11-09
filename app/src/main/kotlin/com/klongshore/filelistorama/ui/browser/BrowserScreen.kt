@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -24,7 +26,10 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -46,6 +51,7 @@ import com.klongshore.filelistorama.domain.ViewSettings
 import java.text.DateFormat
 import java.util.Date
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BrowserScreen(
     modifier: Modifier = Modifier,
@@ -64,15 +70,26 @@ fun BrowserScreen(
                 onShowHidden = viewModel::setShowHidden,
             )
         }
-        when (val listing = state.listing) {
-            Listing.Loading -> Centered { CircularProgressIndicator() }
-            is Listing.Failed -> Centered { Text(listing.failure.message()) }
-            is Listing.Loaded ->
-                if (listing.entries.isEmpty()) {
-                    Centered { Text("This folder is empty") }
-                } else {
-                    EntryList(listing.entries, onOpen = viewModel::open)
-                }
+        PullToRefreshBox(
+            isRefreshing = state.isRefreshing,
+            onRefresh = viewModel::refresh,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            when (val listing = state.listing) {
+                Listing.Loading -> Centered { CircularProgressIndicator() }
+                is Listing.Failed -> ErrorRow(
+                    failure = listing.failure,
+                    canGoUp = state.crumbs.size > 1,
+                    onGoUp = { viewModel.navigateUp() },
+                    onRetry = viewModel::refresh,
+                )
+                is Listing.Loaded ->
+                    if (listing.entries.isEmpty()) {
+                        Centered { Text("This folder is empty") }
+                    } else {
+                        EntryList(listing.entries, onOpen = viewModel::open)
+                    }
+            }
         }
     }
 }
@@ -169,9 +186,37 @@ private fun EntryList(entries: List<Entry>, onOpen: (Entry) -> Unit) {
     }
 }
 
+/** Scrollable so pull-to-refresh still works when there is nothing to list. */
 @Composable
 private fun Centered(content: @Composable () -> Unit) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { content() }
+    Box(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        contentAlignment = Alignment.Center,
+    ) { content() }
+}
+
+@Composable
+private fun ErrorRow(
+    failure: Failure,
+    canGoUp: Boolean,
+    onGoUp: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        Surface(
+            color = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            shape = MaterialTheme.shapes.medium,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(failure.message())
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (canGoUp) TextButton(onClick = onGoUp) { Text("Go up") }
+                    TextButton(onClick = onRetry) { Text("Retry") }
+                }
+            }
+        }
+    }
 }
 
 private fun Failure.message(): String = when (this) {

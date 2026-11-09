@@ -1,6 +1,7 @@
 package com.klongshore.filelistorama.ui.browser
 
 import com.klongshore.filelistorama.data.local.LocalFileSource
+import androidx.lifecycle.SavedStateHandle
 import com.klongshore.filelistorama.domain.BrowserPreferences
 import com.klongshore.filelistorama.domain.Entry
 import com.klongshore.filelistorama.domain.SortKey
@@ -44,9 +45,13 @@ class BrowserViewModelTest {
         File(root, path).apply { parentFile?.mkdirs() }.writeText(content)
     }
 
-    private fun viewModel(prefs: BrowserPreferences = InMemoryBrowserPreferences()) = BrowserViewModel(
+    private fun viewModel(
+        prefs: BrowserPreferences = InMemoryBrowserPreferences(),
+        savedState: SavedStateHandle = SavedStateHandle(),
+    ) = BrowserViewModel(
         LocalFileSource(root, displayName = "Internal storage", io = Dispatchers.Unconfined),
         prefs,
+        savedState,
     )
 
     private fun BrowserViewModel.entries(): List<Entry> =
@@ -294,5 +299,125 @@ class BrowserViewModelTest {
         vm.open(vm.entry("sub"))
 
         assertEquals(listOf("b.txt", "a.txt", ".hidden"), vm.names())
+    }
+
+    // --- resilience: refresh and state restore ---
+
+    @Test
+    fun `refreshing shows files added outside the app`() {
+        file("a.txt")
+        val vm = viewModel()
+        file("b.txt")
+        assertEquals(listOf("a.txt"), vm.names())
+
+        vm.refresh()
+
+        assertEquals(listOf("a.txt", "b.txt"), vm.names())
+    }
+
+    @Test
+    fun `refreshing drops files removed outside the app`() {
+        file("a.txt")
+        file("b.txt")
+        val vm = viewModel()
+        File(root, "a.txt").delete()
+
+        vm.refresh()
+
+        assertEquals(listOf("b.txt"), vm.names())
+    }
+
+    @Test
+    fun `refreshing keeps the user in the same folder`() {
+        file("sub/a.txt")
+        val vm = viewModel()
+        vm.open(vm.entry("sub"))
+        file("sub/b.txt")
+
+        vm.refresh()
+
+        assertEquals(listOf("Internal storage", "sub"), vm.crumbNames())
+        assertEquals(listOf("a.txt", "b.txt"), vm.names())
+    }
+
+    @Test
+    fun `refresh finishes and is no longer in progress`() {
+        file("a.txt")
+        val vm = viewModel()
+
+        vm.refresh()
+
+        assertFalse(vm.state.value.isRefreshing)
+    }
+
+    @Test
+    fun `refreshing a folder that has vanished shows not found`() {
+        file("gone/x.txt")
+        val vm = viewModel()
+        vm.open(vm.entry("gone"))
+        File(root, "gone").deleteRecursively()
+
+        vm.refresh()
+
+        assertEquals(Listing.Failed(Failure.NotFound), vm.state.value.listing)
+        assertTrue(vm.navigateUp())
+    }
+
+    @Test
+    fun `the current folder is restored after the process is recreated`() {
+        file("a/b/deep.txt")
+        val saved = SavedStateHandle()
+        val before = viewModel(savedState = saved)
+        before.open(before.entry("a"))
+        before.open(before.entry("b"))
+
+        val after = viewModel(savedState = saved)
+
+        assertEquals(listOf("Internal storage", "a", "b"), after.crumbNames())
+        assertEquals(listOf("deep.txt"), after.names())
+    }
+
+    @Test
+    fun `going up after a restore still works`() {
+        file("a/b/deep.txt")
+        val saved = SavedStateHandle()
+        val before = viewModel(savedState = saved)
+        before.open(before.entry("a"))
+        before.open(before.entry("b"))
+
+        val after = viewModel(savedState = saved)
+        after.navigateUp()
+
+        assertEquals(listOf("Internal storage", "a"), after.crumbNames())
+        assertEquals(listOf("b"), after.names())
+    }
+
+    @Test
+    fun `a restored folder that no longer exists shows not found with a way back up`() {
+        file("a/b/deep.txt")
+        val saved = SavedStateHandle()
+        val before = viewModel(savedState = saved)
+        before.open(before.entry("a"))
+        before.open(before.entry("b"))
+        File(root, "a/b").deleteRecursively()
+
+        val after = viewModel(savedState = saved)
+
+        assertEquals(Listing.Failed(Failure.NotFound), after.state.value.listing)
+        assertTrue(after.navigateUp())
+        assertEquals(listOf("Internal storage", "a"), after.crumbNames())
+    }
+
+    @Test
+    fun `unusable saved state falls back to the root`() {
+        file("a.txt")
+        val saved = SavedStateHandle(
+            mapOf("crumb_ids" to arrayListOf("/somewhere/else"), "crumb_names" to arrayListOf("x", "y")),
+        )
+
+        val vm = viewModel(savedState = saved)
+
+        assertEquals(listOf("Internal storage"), vm.crumbNames())
+        assertEquals(listOf("a.txt"), vm.names())
     }
 }
