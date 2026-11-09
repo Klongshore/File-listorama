@@ -8,12 +8,16 @@ import com.klongshore.filelistorama.domain.SortKey
 import com.klongshore.filelistorama.domain.ViewSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -419,5 +423,29 @@ class BrowserViewModelTest {
 
         assertEquals(listOf("Internal storage"), vm.crumbNames())
         assertEquals(listOf("a.txt"), vm.names())
+    }
+
+    // --- opening files ---
+
+    @Test
+    fun `tapping a file asks the screen to open it`() = runTest {
+        file("notes.txt")
+        val vm = viewModel()
+        val notes = vm.entry("notes.txt")
+
+        vm.open(notes)
+
+        assertEquals(BrowserEvent.OpenFile(notes), vm.events.first())
+    }
+
+    @Test
+    fun `tapping a folder navigates and does not ask to open anything`() = runTest {
+        file("photos/a.jpg")
+        val vm = viewModel()
+
+        vm.open(vm.entry("photos"))
+
+        assertEquals(listOf("Internal storage", "photos"), vm.crumbNames())
+        assertNull(withTimeoutOrNull(1) { vm.events.first() })
     }
 }

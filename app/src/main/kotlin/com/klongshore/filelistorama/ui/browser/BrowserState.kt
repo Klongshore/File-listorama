@@ -21,3 +21,8 @@ data class BrowserState(
     val settings: ViewSettings = ViewSettings(),
     val isRefreshing: Boolean = false,
 )
+
+/** One-off requests from the ViewModel to the screen. */
+sealed interface BrowserEvent {
+    data class OpenFile(val entry: Entry) : BrowserEvent
+}

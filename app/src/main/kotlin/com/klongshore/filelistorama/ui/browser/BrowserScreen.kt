@@ -1,6 +1,7 @@
 package com.klongshore.filelistorama.ui.browser
 
 import android.text.format.Formatter
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -33,6 +34,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,6 +62,18 @@ fun BrowserScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     BackHandler(enabled = state.crumbs.size > 1) { viewModel.navigateUp() }
+
+    val context = LocalContext.current
+    LaunchedEffect(viewModel) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is BrowserEvent.OpenFile ->
+                    if (!openWithSystem(context, event.entry)) {
+                        Toast.makeText(context, "No app can open this file", Toast.LENGTH_SHORT).show()
+                    }
+            }
+        }
+    }
 
     Column(modifier.fillMaxSize()) {
         Row(verticalAlignment = Alignment.CenterVertically) {

@@ -13,10 +13,13 @@ import com.klongshore.filelistorama.domain.SortKey
 import com.klongshore.filelistorama.domain.ViewSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -54,15 +57,23 @@ class BrowserViewModel @Inject constructor(
         initialValue = BrowserState(crumbs.value, Listing.Loading),
     )
 
+    private val _events = Channel<BrowserEvent>(Channel.BUFFERED)
+
+    /** One-off requests for the screen, such as handing a file to another app. */
+    val events: Flow<BrowserEvent> = _events.receiveAsFlow()
+
     private var loadJob: Job? = null
 
     init {
         loadCurrent()
     }
 
-    /** Opens [entry] if it is a folder; files are ignored here. */
+    /** Folders open in place; files are handed to the screen to open with another app. */
     fun open(entry: Entry) {
-        if (entry.kind != EntryKind.Folder) return
+        if (entry.kind != EntryKind.Folder) {
+            _events.trySend(BrowserEvent.OpenFile(entry))
+            return
+        }
         setCrumbs(crumbs.value + Crumb(entry.ref, entry.name))
         loadCurrent()
     }
