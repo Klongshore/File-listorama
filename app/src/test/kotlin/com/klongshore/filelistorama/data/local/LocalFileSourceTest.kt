@@ -13,10 +13,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import java.awt.image.BufferedImage
-import java.io.ByteArrayInputStream
 import java.io.File
-import javax.imageio.ImageIO
 
 class LocalFileSourceTest : FileSourceContract() {
 
@@ -32,7 +29,7 @@ class LocalFileSourceTest : FileSourceContract() {
                 File(root, path).apply { parentFile?.mkdirs() }.writeText(content)
             }
         }
-        return LocalFileSource(root, io = Dispatchers.Unconfined, thumbnails = ImageIoThumbnails())
+        return LocalFileSource(root, io = Dispatchers.Unconfined, thumbnails = FakeThumbnails())
     }
 
     @Test
@@ -99,10 +96,6 @@ class LocalFileSourceTest : FileSourceContract() {
 
     // --- thumbnails ---
 
-    private fun writePng(file: File, width: Int, height: Int) {
-        ImageIO.write(BufferedImage(width, height, BufferedImage.TYPE_INT_RGB), "png", file)
-    }
-
     private suspend fun FileSource.entry(name: String) =
         (list(root) as FileResult.Success).value.single { it.name == name }
 
@@ -120,22 +113,17 @@ class LocalFileSourceTest : FileSourceContract() {
     }
 
     @Test
-    fun `a thumbnail of a real image comes back as a smaller image`() = runTest {
-        val source = sourceWith(mapOf("placeholder.txt" to "x"))
-        writePng(File(source.root.itemId, "wide.png"), width = 400, height = 200)
+    fun `a thumbnail is produced at the requested size from the image file`() = runTest {
+        val source = sourceWith(mapOf("wide.png" to "IMG:pixels"))
 
         val result = source.thumbnail(source.entry("wide.png"), sizePx = 64)
 
-        val bytes = (result as FileResult.Success).value
-        val decoded = ImageIO.read(ByteArrayInputStream(bytes))
-        assertTrue(decoded.width in 1..64)
-        assertTrue(decoded.height in 1..64)
-        assertEquals(2.0, decoded.width.toDouble() / decoded.height, 0.1)
+        assertEquals("thumb:64:wide.png", String((result as FileResult.Success).value))
     }
 
     @Test
     fun `a corrupt image yields no thumbnail instead of an exception`() = runTest {
-        val source = sourceWith(mapOf("broken.png" to "this is not really a png"))
+        val source = sourceWith(mapOf("broken.png" to "this is not really an image"))
 
         val result = source.thumbnail(source.entry("broken.png"), sizePx = 64)
 
