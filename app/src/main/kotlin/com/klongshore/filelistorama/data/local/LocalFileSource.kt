@@ -18,6 +18,7 @@ class LocalFileSource(
     override val displayName: String = "Internal storage",
     override val sourceId: String = "local",
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    private val thumbnails: ThumbnailGenerator = ThumbnailGenerator.None,
 ) : FileSource {
 
     private val canonicalRoot: File = rootDir.canonicalFile
@@ -45,6 +46,25 @@ class LocalFileSource(
         }
     }
 
+    override suspend fun thumbnail(entry: Entry, sizePx: Int): FileResult<ByteArray> = withContext(io) {
+        if (entry.ref.sourceId != sourceId) return@withContext FileResult.NotFound
+        try {
+            val file = File(entry.ref.itemId)
+            when {
+                !isInsideRoot(file) || !file.exists() -> FileResult.NotFound
+                !file.isFile -> FileResult.Io("Not a file: ${file.name}")
+                !file.canRead() -> FileResult.PermissionDenied
+                else -> thumbnails.generate(file, sizePx)
+                    ?.let { FileResult.Success(it) }
+                    ?: FileResult.Io("No thumbnail for ${file.name}")
+            }
+        } catch (e: SecurityException) {
+            FileResult.PermissionDenied
+        } catch (e: IOException) {
+            FileResult.Io(e.message)
+        }
+    }
+
     private fun isInsideRoot(file: File): Boolean {
         val path = file.canonicalFile.toPath()
         return path.startsWith(canonicalRoot.toPath())
@@ -60,6 +80,11 @@ class LocalFileSource(
             modifiedMillis = file.lastModified(),
             mimeType = if (isFolder) null else URLConnection.guessContentTypeFromName(file.name),
             isHidden = file.name.startsWith("."),
+            hasThumbnail = !isFolder && file.extension.lowercase() in IMAGE_EXTENSIONS,
         )
+    }
+
+    private companion object {
+        val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif")
     }
 }

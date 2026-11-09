@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import com.klongshore.filelistorama.domain.BrowserPreferences
 import com.klongshore.filelistorama.domain.Entry
 import com.klongshore.filelistorama.domain.SortKey
+import com.klongshore.filelistorama.domain.ViewMode
 import com.klongshore.filelistorama.domain.ViewSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -569,5 +570,67 @@ class BrowserViewModelTest {
         val vm = viewModel(locations = FakeLocations(emptyList()))
 
         assertEquals(Listing.Failed(Failure.NotFound), vm.state.value.listing)
+    }
+
+    // --- list / grid view mode ---
+
+    @Test
+    fun `the browser starts in list mode`() {
+        assertEquals(ViewMode.List, viewModel().state.value.settings.viewMode)
+    }
+
+    @Test
+    fun `switching to grid and back updates the view mode immediately`() {
+        val vm = viewModel()
+
+        vm.setViewMode(ViewMode.Grid)
+        assertEquals(ViewMode.Grid, vm.state.value.settings.viewMode)
+
+        vm.setViewMode(ViewMode.List)
+        assertEquals(ViewMode.List, vm.state.value.settings.viewMode)
+    }
+
+    @Test
+    fun `the chosen view mode is applied in the next session`() {
+        val prefs = InMemoryBrowserPreferences()
+        viewModel(prefs).setViewMode(ViewMode.Grid)
+
+        val second = viewModel(prefs)
+
+        assertEquals(ViewMode.Grid, second.state.value.settings.viewMode)
+    }
+
+    @Test
+    fun `view mode does not change sorting, hidden filtering or navigation`() {
+        file(".secret")
+        file("sub/a.txt")
+        file("sub/b.txt")
+        val vm = viewModel()
+        vm.setSort(SortKey.Name, ascending = false)
+        vm.setShowHidden(true)
+        vm.open(vm.entry("sub"))
+        val listNames = vm.names()
+        val listCrumbs = vm.crumbNames()
+
+        vm.setViewMode(ViewMode.Grid)
+
+        assertEquals(listNames, vm.names())
+        assertEquals(listCrumbs, vm.crumbNames())
+        assertEquals(SortKey.Name, vm.state.value.settings.sortKey)
+        assertFalse(vm.state.value.settings.ascending)
+        assertTrue(vm.state.value.settings.showHidden)
+    }
+
+    @Test
+    fun `changing sort in grid mode keeps the grid`() {
+        file("a.txt")
+        file("b.txt")
+        val vm = viewModel()
+        vm.setViewMode(ViewMode.Grid)
+
+        vm.setSort(SortKey.Name, ascending = false)
+
+        assertEquals(ViewMode.Grid, vm.state.value.settings.viewMode)
+        assertEquals(listOf("b.txt", "a.txt"), vm.names())
     }
 }

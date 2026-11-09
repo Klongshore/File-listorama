@@ -41,7 +41,7 @@ class AndroidLocationsProvider(private val context: Context) : LocationsProvider
             if (!mounted || dir == null) return@mapNotNull null
             val id = if (volume.isPrimary) "local" else "local:${volume.uuid ?: dir.name}"
             val name = if (volume.isPrimary) "Internal storage" else volume.getDescription(context)
-            Location(LocalFileSource(dir, displayName = name, sourceId = id))
+            Location(LocalFileSource(dir, displayName = name, sourceId = id, thumbnails = BitmapThumbnailGenerator()))
         }
     }
 

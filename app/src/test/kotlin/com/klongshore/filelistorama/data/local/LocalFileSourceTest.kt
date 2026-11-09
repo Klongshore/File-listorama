@@ -1,5 +1,6 @@
 package com.klongshore.filelistorama.data.local
 
+import com.klongshore.filelistorama.domain.EntryKind
 import com.klongshore.filelistorama.domain.FileRef
 import com.klongshore.filelistorama.domain.FileResult
 import com.klongshore.filelistorama.domain.FileSource
@@ -28,7 +29,7 @@ class LocalFileSourceTest : FileSourceContract() {
                 File(root, path).apply { parentFile?.mkdirs() }.writeText(content)
             }
         }
-        return LocalFileSource(root, io = Dispatchers.Unconfined)
+        return LocalFileSource(root, io = Dispatchers.Unconfined, thumbnails = FakeThumbnails())
     }
 
     @Test
@@ -91,5 +92,50 @@ class LocalFileSourceTest : FileSourceContract() {
         val result = source.list(FileRef("someone-else", source.root.itemId))
 
         assertEquals(FileResult.NotFound, result)
+    }
+
+    // --- thumbnails ---
+
+    private suspend fun FileSource.entry(name: String) =
+        (list(root) as FileResult.Success).value.single { it.name == name }
+
+    @Test
+    fun `only image files report that they have a thumbnail`() = runTest {
+        val source = sourceWith(mapOf("notes.txt" to "x", "folder/a.txt" to "y", "pic.jpg" to "z", "pic.png" to "z"))
+
+        val entries = (source.list(source.root) as FileResult.Success).value.associateBy { it.name }
+
+        assertTrue(entries.getValue("pic.jpg").hasThumbnail)
+        assertTrue(entries.getValue("pic.png").hasThumbnail)
+        assertEquals(false, entries.getValue("notes.txt").hasThumbnail)
+        assertEquals(EntryKind.Folder, entries.getValue("folder").kind)
+        assertEquals(false, entries.getValue("folder").hasThumbnail)
+    }
+
+    @Test
+    fun `a thumbnail is produced at the requested size from the image file`() = runTest {
+        val source = sourceWith(mapOf("wide.png" to "IMG:pixels"))
+
+        val result = source.thumbnail(source.entry("wide.png"), sizePx = 64)
+
+        assertEquals("thumb:64:wide.png", String((result as FileResult.Success).value))
+    }
+
+    @Test
+    fun `a corrupt image yields no thumbnail instead of an exception`() = runTest {
+        val source = sourceWith(mapOf("broken.png" to "this is not really an image"))
+
+        val result = source.thumbnail(source.entry("broken.png"), sizePx = 64)
+
+        assertTrue(result is FileResult.Io)
+    }
+
+    @Test
+    fun `a thumbnail for an entry from another source is NotFound`() = runTest {
+        val source = sourceWith(mapOf("pic.png" to "x"))
+        val entry = source.entry("pic.png")
+        val foreign = entry.copy(ref = FileRef("someone-else", entry.ref.itemId))
+
+        assertEquals(FileResult.NotFound, source.thumbnail(foreign, sizePx = 64))
     }
 }

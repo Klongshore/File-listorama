@@ -7,4 +7,7 @@ interface FileSource {
     val root: FileRef
 
     suspend fun list(folder: FileRef): FileResult<List<Entry>>
+
+    /** Encoded image bytes for [entry], no larger than [sizePx] on its longest side. */
+    suspend fun thumbnail(entry: Entry, sizePx: Int): FileResult<ByteArray>
 }

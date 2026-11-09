@@ -100,4 +100,21 @@ abstract class FileSourceContract {
         assertFalse(result is FileResult.Success)
         assertNotNull(result)
     }
+
+    @Test
+    fun `a thumbnail for a missing entry is NotFound`() = runTest {
+        val source = sourceWith(mapOf("photo.png" to "x"))
+        val entry = source.rootEntries().single()
+        val missing = entry.copy(ref = entry.ref.copy(itemId = entry.ref.itemId + "-gone"), hasThumbnail = true)
+
+        assertEquals(FileResult.NotFound, source.thumbnail(missing, sizePx = 64))
+    }
+
+    @Test
+    fun `a thumbnail for a folder is not a success`() = runTest {
+        val source = sourceWith(mapOf("photos/a.png" to "x"))
+        val folder = source.rootEntries().single()
+
+        assertFalse(source.thumbnail(folder, sizePx = 64) is FileResult.Success)
+    }
 }

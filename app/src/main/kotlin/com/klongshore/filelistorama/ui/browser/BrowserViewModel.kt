@@ -11,6 +11,7 @@ import com.klongshore.filelistorama.domain.FileResult
 import com.klongshore.filelistorama.domain.Location
 import com.klongshore.filelistorama.domain.LocationsProvider
 import com.klongshore.filelistorama.domain.SortKey
+import com.klongshore.filelistorama.domain.ViewMode
 import com.klongshore.filelistorama.domain.ViewSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -150,6 +151,8 @@ class BrowserViewModel @Inject constructor(
     }
 
     fun setShowHidden(show: Boolean) = updateSettings { it.copy(showHidden = show) }
+
+    fun setViewMode(mode: ViewMode) = updateSettings { it.copy(viewMode = mode) }
 
     private fun updateSettings(transform: (ViewSettings) -> ViewSettings) {
         viewModelScope.launch { prefs.update(transform) }
