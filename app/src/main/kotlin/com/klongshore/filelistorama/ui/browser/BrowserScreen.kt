@@ -20,23 +20,32 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -50,6 +59,7 @@ import com.klongshore.filelistorama.domain.Entry
 import com.klongshore.filelistorama.domain.EntryKind
 import com.klongshore.filelistorama.domain.SortKey
 import com.klongshore.filelistorama.domain.ViewSettings
+import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
 
@@ -61,7 +71,12 @@ fun BrowserScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+
     BackHandler(enabled = state.crumbs.size > 1) { viewModel.navigateUp() }
+    // Declared last so it wins while the drawer is open.
+    BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
 
     val context = LocalContext.current
     LaunchedEffect(viewModel) {
@@ -75,36 +90,65 @@ fun BrowserScreen(
         }
     }
 
-    Column(modifier.fillMaxSize()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Breadcrumbs(state.crumbs, onSelect = viewModel::navigateTo, modifier = Modifier.weight(1f))
-            ViewMenu(
-                settings = state.settings,
-                onSort = viewModel::setSort,
-                onShowHidden = viewModel::setShowHidden,
-            )
-        }
-        PullToRefreshBox(
-            isRefreshing = state.isRefreshing,
-            onRefresh = viewModel::refresh,
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            when (val listing = state.listing) {
-                Listing.Loading -> Centered { CircularProgressIndicator() }
-                is Listing.Failed -> ErrorRow(
-                    failure = listing.failure,
-                    canGoUp = state.crumbs.size > 1,
-                    onGoUp = { viewModel.navigateUp() },
-                    onRetry = viewModel::refresh,
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet {
+                Text(
+                    "Locations",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(horizontal = 28.dp, vertical = 16.dp),
                 )
-                is Listing.Loaded ->
-                    if (listing.entries.isEmpty()) {
-                        Centered { Text("This folder is empty") }
-                    } else {
-                        EntryList(listing.entries, onOpen = viewModel::open)
-                    }
+                state.locations.forEach { location ->
+                    NavigationDrawerItem(
+                        label = { Text(location.name) },
+                        icon = { Icon(Icons.Outlined.Storage, contentDescription = null) },
+                        selected = location.id == state.selectedLocationId,
+                        onClick = {
+                            viewModel.selectLocation(location.id)
+                            scope.launch { drawerState.close() }
+                        },
+                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                    )
+                }
+            }
+        },
+    ) {
+        Column(modifier.fillMaxSize()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                    Icon(Icons.Outlined.Menu, contentDescription = "Locations")
+                }
+                Breadcrumbs(state.crumbs, onSelect = viewModel::navigateTo, modifier = Modifier.weight(1f))
+                ViewMenu(
+                    settings = state.settings,
+                    onSort = viewModel::setSort,
+                    onShowHidden = viewModel::setShowHidden,
+                )
+            }
+            PullToRefreshBox(
+                isRefreshing = state.isRefreshing,
+                onRefresh = viewModel::refresh,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                when (val listing = state.listing) {
+                    Listing.Loading -> Centered { CircularProgressIndicator() }
+                    is Listing.Failed -> ErrorRow(
+                        failure = listing.failure,
+                        canGoUp = state.crumbs.size > 1,
+                        onGoUp = { viewModel.navigateUp() },
+                        onRetry = viewModel::refresh,
+                    )
+                    is Listing.Loaded ->
+                        if (listing.entries.isEmpty()) {
+                            Centered { Text("This folder is empty") }
+                        } else {
+                            EntryList(listing.entries, onOpen = viewModel::open)
+                        }
+                }
             }
         }
+    }
     }
 }
 

@@ -1,6 +1,5 @@
 package com.klongshore.filelistorama.ui.browser
 
-import com.klongshore.filelistorama.data.local.LocalFileSource
 import androidx.lifecycle.SavedStateHandle
 import com.klongshore.filelistorama.domain.BrowserPreferences
 import com.klongshore.filelistorama.domain.Entry
@@ -49,14 +48,13 @@ class BrowserViewModelTest {
         File(root, path).apply { parentFile?.mkdirs() }.writeText(content)
     }
 
+    private val internal get() = FakeLocations.location(root, "Internal storage", "local")
+
     private fun viewModel(
         prefs: BrowserPreferences = InMemoryBrowserPreferences(),
         savedState: SavedStateHandle = SavedStateHandle(),
-    ) = BrowserViewModel(
-        LocalFileSource(root, displayName = "Internal storage", io = Dispatchers.Unconfined),
-        prefs,
-        savedState,
-    )
+        locations: FakeLocations = FakeLocations(listOf(internal)),
+    ) = BrowserViewModel(locations, prefs, savedState)
 
     private fun BrowserViewModel.entries(): List<Entry> =
         (state.value.listing as Listing.Loaded).entries
@@ -447,5 +445,129 @@ class BrowserViewModelTest {
 
         assertEquals(listOf("Internal storage", "photos"), vm.crumbNames())
         assertNull(withTimeoutOrNull(1) { vm.events.first() })
+    }
+
+    // --- locations drawer and SD card ---
+
+    private fun BrowserViewModel.locationNames() = state.value.locations.map { it.name }
+
+    private fun sdCard(vararg files: String): File =
+        temp.newFolder("sdcard").also { dir ->
+            files.forEach { File(dir, it).apply { parentFile?.mkdirs() }.writeText("x") }
+        }
+
+    private fun sd(dir: File) = FakeLocations.location(dir, "SD card", "local:ABCD-1234")
+
+    @Test
+    fun `internal storage is always listed as a location`() {
+        val vm = viewModel()
+
+        assertEquals(listOf("Internal storage"), vm.locationNames())
+        assertEquals("local", vm.state.value.selectedLocationId)
+    }
+
+    @Test
+    fun `an inserted SD card appears without restarting and a removed one disappears`() {
+        file("a.txt")
+        val locations = FakeLocations(listOf(internal))
+        val vm = viewModel(locations = locations)
+
+        locations.set(listOf(internal, sd(sdCard("photo.jpg"))))
+        assertEquals(listOf("Internal storage", "SD card"), vm.locationNames())
+
+        locations.set(listOf(internal))
+        assertEquals(listOf("Internal storage"), vm.locationNames())
+    }
+
+    @Test
+    fun `selecting a location opens its root with the right breadcrumb`() {
+        file("internal.txt")
+        val card = sd(sdCard("photo.jpg"))
+        val vm = viewModel(locations = FakeLocations(listOf(internal, card)))
+
+        vm.selectLocation(card.id)
+
+        assertEquals(listOf("SD card"), vm.crumbNames())
+        assertEquals(listOf("photo.jpg"), vm.names())
+        assertEquals(card.id, vm.state.value.selectedLocationId)
+    }
+
+    @Test
+    fun `selecting a location resets the breadcrumb from wherever you were`() {
+        file("deep/er/x.txt")
+        val card = sd(sdCard("photo.jpg"))
+        val vm = viewModel(locations = FakeLocations(listOf(internal, card)))
+        vm.open(vm.entry("deep"))
+        vm.open(vm.entry("er"))
+
+        vm.selectLocation("local")
+
+        assertEquals(listOf("Internal storage"), vm.crumbNames())
+        assertEquals(listOf("deep"), vm.names())
+    }
+
+    @Test
+    fun `removing the volume being browsed shows not found instead of crashing`() {
+        file("a.txt")
+        val card = sd(sdCard("photo.jpg"))
+        val locations = FakeLocations(listOf(internal, card))
+        val vm = viewModel(locations = locations)
+        vm.selectLocation(card.id)
+
+        locations.set(listOf(internal))
+
+        assertEquals(Listing.Failed(Failure.NotFound), vm.state.value.listing)
+        vm.selectLocation("local")
+        assertEquals(listOf("a.txt"), vm.names())
+    }
+
+    @Test
+    fun `a volume that comes back while selected shows its files again`() {
+        val dir = sdCard("photo.jpg")
+        val locations = FakeLocations(listOf(internal, sd(dir)))
+        val vm = viewModel(locations = locations)
+        vm.selectLocation("local:ABCD-1234")
+        locations.set(listOf(internal))
+
+        locations.set(listOf(internal, sd(dir)))
+
+        assertEquals(listOf("photo.jpg"), vm.names())
+    }
+
+    @Test
+    fun `the selected location is restored after the process is recreated`() {
+        val card = sd(sdCard("a/photo.jpg"))
+        val locations = FakeLocations(listOf(internal, card))
+        val saved = SavedStateHandle()
+        val before = viewModel(savedState = saved, locations = locations)
+        before.selectLocation(card.id)
+        before.open(before.entry("a"))
+
+        val after = viewModel(savedState = saved, locations = locations)
+
+        assertEquals(card.id, after.state.value.selectedLocationId)
+        assertEquals(listOf("SD card", "a"), after.crumbNames())
+        assertEquals(listOf("photo.jpg"), after.names())
+    }
+
+    @Test
+    fun `a saved location that is gone falls back to internal storage`() {
+        file("a.txt")
+        val card = sd(sdCard("photo.jpg"))
+        val saved = SavedStateHandle()
+        val before = viewModel(savedState = saved, locations = FakeLocations(listOf(internal, card)))
+        before.selectLocation(card.id)
+
+        val after = viewModel(savedState = saved, locations = FakeLocations(listOf(internal)))
+
+        assertEquals("local", after.state.value.selectedLocationId)
+        assertEquals(listOf("a.txt"), after.names())
+    }
+
+    @Test
+    fun `with no locations at all the screen reports not found`() {
+        val vm = viewModel(locations = FakeLocations(emptyList()))
+
+        assertEquals(Listing.Failed(Failure.NotFound), vm.state.value.listing)
     }
 }

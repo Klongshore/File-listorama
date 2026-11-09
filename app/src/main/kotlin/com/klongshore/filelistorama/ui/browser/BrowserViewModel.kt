@@ -8,7 +8,8 @@ import com.klongshore.filelistorama.domain.Entry
 import com.klongshore.filelistorama.domain.EntryKind
 import com.klongshore.filelistorama.domain.FileRef
 import com.klongshore.filelistorama.domain.FileResult
-import com.klongshore.filelistorama.domain.FileSource
+import com.klongshore.filelistorama.domain.Location
+import com.klongshore.filelistorama.domain.LocationsProvider
 import com.klongshore.filelistorama.domain.SortKey
 import com.klongshore.filelistorama.domain.ViewSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -27,34 +28,46 @@ import javax.inject.Inject
 
 @HiltViewModel
 class BrowserViewModel @Inject constructor(
-    private val source: FileSource,
+    private val locationsProvider: LocationsProvider,
     private val prefs: BrowserPreferences,
     private val savedState: SavedStateHandle,
 ) : ViewModel() {
 
-    private val crumbs = MutableStateFlow(restoreCrumbs())
+    private val locations = MutableStateFlow<List<Location>>(emptyList())
+    private val selectedId = MutableStateFlow<String?>(null)
+    private val crumbs = MutableStateFlow<List<Crumb>>(emptyList())
 
     /** What the source returned for the current folder, before sorting and filtering. */
     private val rawListing = MutableStateFlow<Listing>(Listing.Loading)
 
     private val refreshing = MutableStateFlow(false)
 
+    private data class Navigation(
+        val crumbs: List<Crumb>,
+        val selectedId: String?,
+        val locations: List<Location>,
+    )
+
+    private val navigation = combine(crumbs, selectedId, locations, ::Navigation)
+
     val state: StateFlow<BrowserState> = combine(
-        crumbs,
+        navigation,
         rawListing,
         refreshing,
         prefs.settings,
-    ) { crumbs, raw, refreshing, settings ->
+    ) { nav, raw, refreshing, settings ->
         BrowserState(
-            crumbs = crumbs,
+            crumbs = nav.crumbs,
             listing = if (raw is Listing.Loaded) Listing.Loaded(raw.entries.arranged(settings)) else raw,
             settings = settings,
             isRefreshing = refreshing,
+            locations = nav.locations,
+            selectedLocationId = nav.selectedId,
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,
-        initialValue = BrowserState(crumbs.value, Listing.Loading),
+        initialValue = BrowserState(emptyList(), Listing.Loading),
     )
 
     private val _events = Channel<BrowserEvent>(Channel.BUFFERED)
@@ -65,6 +78,40 @@ class BrowserViewModel @Inject constructor(
     private var loadJob: Job? = null
 
     init {
+        viewModelScope.launch { locationsProvider.locations.collect(::onLocationsChanged) }
+    }
+
+    /** Switches to another location, starting at its root. */
+    fun selectLocation(id: String) {
+        val location = locations.value.firstOrNull { it.id == id } ?: return
+        selectedId.value = id
+        setCrumbs(listOf(rootCrumb(location)))
+        loadCurrent()
+    }
+
+    private fun onLocationsChanged(available: List<Location>) {
+        val wasAvailable = locations.value.any { it.id == selectedId.value }
+        locations.value = available
+        val current = selectedId.value
+        when {
+            available.isEmpty() -> rawListing.value = Listing.Failed(Failure.NotFound)
+            // First emission: go back to where the user was, or start at the primary location.
+            current == null -> start(available)
+            available.none { it.id == current } -> {
+                // The volume being browsed was removed.
+                loadJob?.cancel()
+                refreshing.value = false
+                rawListing.value = Listing.Failed(Failure.NotFound)
+            }
+            !wasAvailable -> loadCurrent() // it came back
+        }
+    }
+
+    private fun start(available: List<Location>) {
+        val saved = savedState.get<String>(KEY_LOCATION)
+        val location = available.firstOrNull { it.id == saved } ?: available.first()
+        selectedId.value = location.id
+        crumbs.value = restoreCrumbs(location)
         loadCurrent()
     }
 
@@ -117,6 +164,11 @@ class BrowserViewModel @Inject constructor(
             rawListing.value = Listing.Loading
         }
         val folder = crumbs.value.last().ref
+        val source = locations.value.firstOrNull { it.id == selectedId.value }?.source
+        if (source == null) {
+            rawListing.value = Listing.Failed(Failure.NotFound)
+            return
+        }
         loadJob = viewModelScope.launch {
             rawListing.value = when (val result = source.list(folder)) {
                 is FileResult.Success -> Listing.Loaded(result.value)
@@ -131,22 +183,27 @@ class BrowserViewModel @Inject constructor(
     private fun setCrumbs(next: List<Crumb>) {
         crumbs.value = next
         // Saved as plain string lists so they survive process death.
+        savedState[KEY_LOCATION] = selectedId.value
         savedState[KEY_IDS] = ArrayList(next.map { it.ref.itemId })
         savedState[KEY_NAMES] = ArrayList(next.map { it.name })
     }
 
+    private fun rootCrumb(location: Location) = Crumb(location.source.root, location.name)
+
     /** Rebuilds the breadcrumb trail saved before the process died, or starts at the root. */
-    private fun restoreCrumbs(): List<Crumb> {
-        val root = Crumb(source.root, source.displayName)
+    private fun restoreCrumbs(location: Location): List<Crumb> {
+        val root = rootCrumb(location)
         val ids = savedState.get<ArrayList<String>>(KEY_IDS)
         val names = savedState.get<ArrayList<String>>(KEY_NAMES)
-        val valid = ids != null && names != null && ids.size == names.size &&
-            ids.isNotEmpty() && ids.first() == source.root.itemId
+        val valid = savedState.get<String>(KEY_LOCATION) == location.id &&
+            ids != null && names != null && ids.size == names.size &&
+            ids.isNotEmpty() && ids.first() == location.source.root.itemId
         if (!valid) return listOf(root)
-        return ids!!.zip(names!!) { id, name -> Crumb(FileRef(source.root.sourceId, id), name) }
+        return ids!!.zip(names!!) { id, name -> Crumb(FileRef(location.id, id), name) }
     }
 
     private companion object {
+        const val KEY_LOCATION = "location_id"
         const val KEY_IDS = "crumb_ids"
         const val KEY_NAMES = "crumb_names"
     }
