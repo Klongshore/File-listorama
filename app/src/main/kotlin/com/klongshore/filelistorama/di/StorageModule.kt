@@ -1,13 +1,14 @@
 package com.klongshore.filelistorama.di
 
-import android.os.Environment
+import android.content.Context
+import com.klongshore.filelistorama.data.local.AndroidLocationsProvider
 import com.klongshore.filelistorama.data.local.AndroidStoragePermission
-import com.klongshore.filelistorama.data.local.LocalFileSource
-import com.klongshore.filelistorama.domain.FileSource
+import com.klongshore.filelistorama.domain.LocationsProvider
 import com.klongshore.filelistorama.domain.StoragePermission
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
@@ -16,8 +17,8 @@ import javax.inject.Singleton
 object StorageModule {
     @Provides
     @Singleton
-    fun provideFileSource(): FileSource =
-        LocalFileSource(Environment.getExternalStorageDirectory())
+    fun provideLocations(@ApplicationContext context: Context): LocationsProvider =
+        AndroidLocationsProvider(context)
 
     @Provides
     @Singleton

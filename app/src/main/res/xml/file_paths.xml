@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Lets the app share any file it can list with the app the user picks. -->
+    <root-path name="root" path="" />
+</paths>

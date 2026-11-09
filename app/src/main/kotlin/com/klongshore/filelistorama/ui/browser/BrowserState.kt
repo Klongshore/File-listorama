@@ -2,6 +2,8 @@ package com.klongshore.filelistorama.ui.browser
 
 import com.klongshore.filelistorama.domain.Entry
 import com.klongshore.filelistorama.domain.FileRef
+import com.klongshore.filelistorama.domain.Location
+import com.klongshore.filelistorama.domain.ViewSettings
 
 /** One level of the path from the root to the folder being shown. */
 data class Crumb(val ref: FileRef, val name: String)
@@ -17,4 +19,13 @@ sealed interface Listing {
 data class BrowserState(
     val crumbs: List<Crumb>,
     val listing: Listing,
+    val settings: ViewSettings = ViewSettings(),
+    val isRefreshing: Boolean = false,
+    val locations: List<Location> = emptyList(),
+    val selectedLocationId: String? = null,
 )
+
+/** One-off requests from the ViewModel to the screen. */
+sealed interface BrowserEvent {
+    data class OpenFile(val entry: Entry) : BrowserEvent
+}

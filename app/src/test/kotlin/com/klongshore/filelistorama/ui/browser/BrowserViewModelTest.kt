@@ -1,15 +1,22 @@
 package com.klongshore.filelistorama.ui.browser
 
-import com.klongshore.filelistorama.data.local.LocalFileSource
+import androidx.lifecycle.SavedStateHandle
+import com.klongshore.filelistorama.domain.BrowserPreferences
 import com.klongshore.filelistorama.domain.Entry
+import com.klongshore.filelistorama.domain.SortKey
+import com.klongshore.filelistorama.domain.ViewSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -41,9 +48,13 @@ class BrowserViewModelTest {
         File(root, path).apply { parentFile?.mkdirs() }.writeText(content)
     }
 
-    private fun viewModel() = BrowserViewModel(
-        LocalFileSource(root, displayName = "Internal storage", io = Dispatchers.Unconfined),
-    )
+    private val internal get() = FakeLocations.location(root, "Internal storage", "local")
+
+    private fun viewModel(
+        prefs: BrowserPreferences = InMemoryBrowserPreferences(),
+        savedState: SavedStateHandle = SavedStateHandle(),
+        locations: FakeLocations = FakeLocations(listOf(internal)),
+    ) = BrowserViewModel(locations, prefs, savedState)
 
     private fun BrowserViewModel.entries(): List<Entry> =
         (state.value.listing as Listing.Loaded).entries
@@ -160,5 +171,403 @@ class BrowserViewModelTest {
 
         File(root, "locked").setReadable(true)
         assertEquals(Listing.Failed(Failure.PermissionDenied), vm.state.value.listing)
+    }
+
+    // --- sorting and hidden files ---
+
+    private fun BrowserViewModel.names() = entries().map { it.name }
+
+    private fun fileOfSize(path: String, bytes: Int) = file(path, "x".repeat(bytes))
+
+    private fun touch(path: String, millis: Long) {
+        File(root, path).setLastModified(millis)
+    }
+
+    @Test
+    fun `sorting by name descending reverses each group but keeps folders first`() {
+        file("a.txt")
+        file("b.txt")
+        file("alpha/x")
+        file("zeta/x")
+        val vm = viewModel()
+
+        vm.setSort(SortKey.Name, ascending = false)
+
+        assertEquals(listOf("zeta", "alpha", "b.txt", "a.txt"), vm.names())
+    }
+
+    @Test
+    fun `name sorting ignores case`() {
+        file("banana.txt")
+        file("Apple.txt")
+        file("cherry.txt")
+
+        assertEquals(listOf("Apple.txt", "banana.txt", "cherry.txt"), viewModel().names())
+    }
+
+    @Test
+    fun `sorting by date orders files oldest first or newest first`() {
+        file("mid.txt")
+        file("old.txt")
+        file("new.txt")
+        touch("old.txt", 1_000_000_000_000L)
+        touch("mid.txt", 1_100_000_000_000L)
+        touch("new.txt", 1_200_000_000_000L)
+        val vm = viewModel()
+
+        vm.setSort(SortKey.Date, ascending = true)
+        assertEquals(listOf("old.txt", "mid.txt", "new.txt"), vm.names())
+
+        vm.setSort(SortKey.Date, ascending = false)
+        assertEquals(listOf("new.txt", "mid.txt", "old.txt"), vm.names())
+    }
+
+    @Test
+    fun `sorting by size orders files smallest first or largest first and folders stay first`() {
+        fileOfSize("big.bin", 300)
+        fileOfSize("small.bin", 10)
+        fileOfSize("medium.bin", 100)
+        file("folder/x")
+        val vm = viewModel()
+
+        vm.setSort(SortKey.Size, ascending = true)
+        assertEquals(listOf("folder", "small.bin", "medium.bin", "big.bin"), vm.names())
+
+        vm.setSort(SortKey.Size, ascending = false)
+        assertEquals(listOf("folder", "big.bin", "medium.bin", "small.bin"), vm.names())
+    }
+
+    @Test
+    fun `hidden files are not shown by default`() {
+        file(".secret")
+        file(".hiddenfolder/x")
+        file("visible.txt")
+
+        assertEquals(listOf("visible.txt"), viewModel().names())
+    }
+
+    @Test
+    fun `turning on show hidden reveals them and turning it off hides them again`() {
+        file(".secret")
+        file("visible.txt")
+        val vm = viewModel()
+
+        vm.setShowHidden(true)
+        assertEquals(listOf(".secret", "visible.txt"), vm.names())
+
+        vm.setShowHidden(false)
+        assertEquals(listOf("visible.txt"), vm.names())
+    }
+
+    @Test
+    fun `changing a setting updates the visible list without reopening the folder`() {
+        file("a.txt")
+        file("b.txt")
+        val vm = viewModel()
+        assertEquals(listOf("a.txt", "b.txt"), vm.names())
+
+        vm.setSort(SortKey.Name, ascending = false)
+
+        assertEquals(listOf("b.txt", "a.txt"), vm.names())
+        assertEquals(SortKey.Name, vm.state.value.settings.sortKey)
+        assertFalse(vm.state.value.settings.ascending)
+    }
+
+    @Test
+    fun `settings chosen in one session are applied in the next`() {
+        file(".secret")
+        file("a.txt")
+        file("b.txt")
+        val prefs = InMemoryBrowserPreferences()
+        val first = viewModel(prefs)
+        first.setSort(SortKey.Name, ascending = false)
+        first.setShowHidden(true)
+
+        val second = viewModel(prefs)
+
+        assertEquals(listOf("b.txt", "a.txt", ".secret"), second.names())
+        assertEquals(ViewSettings(SortKey.Name, ascending = false, showHidden = true), second.state.value.settings)
+    }
+
+    @Test
+    fun `sorting and hidden settings apply inside sub folders too`() {
+        file("sub/.hidden")
+        file("sub/a.txt")
+        file("sub/b.txt")
+        val vm = viewModel()
+        vm.setSort(SortKey.Name, ascending = false)
+        vm.setShowHidden(true)
+
+        vm.open(vm.entry("sub"))
+
+        assertEquals(listOf("b.txt", "a.txt", ".hidden"), vm.names())
+    }
+
+    // --- resilience: refresh and state restore ---
+
+    @Test
+    fun `refreshing shows files added outside the app`() {
+        file("a.txt")
+        val vm = viewModel()
+        file("b.txt")
+        assertEquals(listOf("a.txt"), vm.names())
+
+        vm.refresh()
+
+        assertEquals(listOf("a.txt", "b.txt"), vm.names())
+    }
+
+    @Test
+    fun `refreshing drops files removed outside the app`() {
+        file("a.txt")
+        file("b.txt")
+        val vm = viewModel()
+        File(root, "a.txt").delete()
+
+        vm.refresh()
+
+        assertEquals(listOf("b.txt"), vm.names())
+    }
+
+    @Test
+    fun `refreshing keeps the user in the same folder`() {
+        file("sub/a.txt")
+        val vm = viewModel()
+        vm.open(vm.entry("sub"))
+        file("sub/b.txt")
+
+        vm.refresh()
+
+        assertEquals(listOf("Internal storage", "sub"), vm.crumbNames())
+        assertEquals(listOf("a.txt", "b.txt"), vm.names())
+    }
+
+    @Test
+    fun `refresh finishes and is no longer in progress`() {
+        file("a.txt")
+        val vm = viewModel()
+
+        vm.refresh()
+
+        assertFalse(vm.state.value.isRefreshing)
+    }
+
+    @Test
+    fun `refreshing a folder that has vanished shows not found`() {
+        file("gone/x.txt")
+        val vm = viewModel()
+        vm.open(vm.entry("gone"))
+        File(root, "gone").deleteRecursively()
+
+        vm.refresh()
+
+        assertEquals(Listing.Failed(Failure.NotFound), vm.state.value.listing)
+        assertTrue(vm.navigateUp())
+    }
+
+    @Test
+    fun `the current folder is restored after the process is recreated`() {
+        file("a/b/deep.txt")
+        val saved = SavedStateHandle()
+        val before = viewModel(savedState = saved)
+        before.open(before.entry("a"))
+        before.open(before.entry("b"))
+
+        val after = viewModel(savedState = saved)
+
+        assertEquals(listOf("Internal storage", "a", "b"), after.crumbNames())
+        assertEquals(listOf("deep.txt"), after.names())
+    }
+
+    @Test
+    fun `going up after a restore still works`() {
+        file("a/b/deep.txt")
+        val saved = SavedStateHandle()
+        val before = viewModel(savedState = saved)
+        before.open(before.entry("a"))
+        before.open(before.entry("b"))
+
+        val after = viewModel(savedState = saved)
+        after.navigateUp()
+
+        assertEquals(listOf("Internal storage", "a"), after.crumbNames())
+        assertEquals(listOf("b"), after.names())
+    }
+
+    @Test
+    fun `a restored folder that no longer exists shows not found with a way back up`() {
+        file("a/b/deep.txt")
+        val saved = SavedStateHandle()
+        val before = viewModel(savedState = saved)
+        before.open(before.entry("a"))
+        before.open(before.entry("b"))
+        File(root, "a/b").deleteRecursively()
+
+        val after = viewModel(savedState = saved)
+
+        assertEquals(Listing.Failed(Failure.NotFound), after.state.value.listing)
+        assertTrue(after.navigateUp())
+        assertEquals(listOf("Internal storage", "a"), after.crumbNames())
+    }
+
+    @Test
+    fun `unusable saved state falls back to the root`() {
+        file("a.txt")
+        val saved = SavedStateHandle(
+            mapOf("crumb_ids" to arrayListOf("/somewhere/else"), "crumb_names" to arrayListOf("x", "y")),
+        )
+
+        val vm = viewModel(savedState = saved)
+
+        assertEquals(listOf("Internal storage"), vm.crumbNames())
+        assertEquals(listOf("a.txt"), vm.names())
+    }
+
+    // --- opening files ---
+
+    @Test
+    fun `tapping a file asks the screen to open it`() = runTest {
+        file("notes.txt")
+        val vm = viewModel()
+        val notes = vm.entry("notes.txt")
+
+        vm.open(notes)
+
+        assertEquals(BrowserEvent.OpenFile(notes), vm.events.first())
+    }
+
+    @Test
+    fun `tapping a folder navigates and does not ask to open anything`() = runTest {
+        file("photos/a.jpg")
+        val vm = viewModel()
+
+        vm.open(vm.entry("photos"))
+
+        assertEquals(listOf("Internal storage", "photos"), vm.crumbNames())
+        assertNull(withTimeoutOrNull(1) { vm.events.first() })
+    }
+
+    // --- locations drawer and SD card ---
+
+    private fun BrowserViewModel.locationNames() = state.value.locations.map { it.name }
+
+    private fun sdCard(vararg files: String): File =
+        temp.newFolder("sdcard").also { dir ->
+            files.forEach { File(dir, it).apply { parentFile?.mkdirs() }.writeText("x") }
+        }
+
+    private fun sd(dir: File) = FakeLocations.location(dir, "SD card", "local:ABCD-1234")
+
+    @Test
+    fun `internal storage is always listed as a location`() {
+        val vm = viewModel()
+
+        assertEquals(listOf("Internal storage"), vm.locationNames())
+        assertEquals("local", vm.state.value.selectedLocationId)
+    }
+
+    @Test
+    fun `an inserted SD card appears without restarting and a removed one disappears`() {
+        file("a.txt")
+        val locations = FakeLocations(listOf(internal))
+        val vm = viewModel(locations = locations)
+
+        locations.set(listOf(internal, sd(sdCard("photo.jpg"))))
+        assertEquals(listOf("Internal storage", "SD card"), vm.locationNames())
+
+        locations.set(listOf(internal))
+        assertEquals(listOf("Internal storage"), vm.locationNames())
+    }
+
+    @Test
+    fun `selecting a location opens its root with the right breadcrumb`() {
+        file("internal.txt")
+        val card = sd(sdCard("photo.jpg"))
+        val vm = viewModel(locations = FakeLocations(listOf(internal, card)))
+
+        vm.selectLocation(card.id)
+
+        assertEquals(listOf("SD card"), vm.crumbNames())
+        assertEquals(listOf("photo.jpg"), vm.names())
+        assertEquals(card.id, vm.state.value.selectedLocationId)
+    }
+
+    @Test
+    fun `selecting a location resets the breadcrumb from wherever you were`() {
+        file("deep/er/x.txt")
+        val card = sd(sdCard("photo.jpg"))
+        val vm = viewModel(locations = FakeLocations(listOf(internal, card)))
+        vm.open(vm.entry("deep"))
+        vm.open(vm.entry("er"))
+
+        vm.selectLocation("local")
+
+        assertEquals(listOf("Internal storage"), vm.crumbNames())
+        assertEquals(listOf("deep"), vm.names())
+    }
+
+    @Test
+    fun `removing the volume being browsed shows not found instead of crashing`() {
+        file("a.txt")
+        val card = sd(sdCard("photo.jpg"))
+        val locations = FakeLocations(listOf(internal, card))
+        val vm = viewModel(locations = locations)
+        vm.selectLocation(card.id)
+
+        locations.set(listOf(internal))
+
+        assertEquals(Listing.Failed(Failure.NotFound), vm.state.value.listing)
+        vm.selectLocation("local")
+        assertEquals(listOf("a.txt"), vm.names())
+    }
+
+    @Test
+    fun `a volume that comes back while selected shows its files again`() {
+        val dir = sdCard("photo.jpg")
+        val locations = FakeLocations(listOf(internal, sd(dir)))
+        val vm = viewModel(locations = locations)
+        vm.selectLocation("local:ABCD-1234")
+        locations.set(listOf(internal))
+
+        locations.set(listOf(internal, sd(dir)))
+
+        assertEquals(listOf("photo.jpg"), vm.names())
+    }
+
+    @Test
+    fun `the selected location is restored after the process is recreated`() {
+        val card = sd(sdCard("a/photo.jpg"))
+        val locations = FakeLocations(listOf(internal, card))
+        val saved = SavedStateHandle()
+        val before = viewModel(savedState = saved, locations = locations)
+        before.selectLocation(card.id)
+        before.open(before.entry("a"))
+
+        val after = viewModel(savedState = saved, locations = locations)
+
+        assertEquals(card.id, after.state.value.selectedLocationId)
+        assertEquals(listOf("SD card", "a"), after.crumbNames())
+        assertEquals(listOf("photo.jpg"), after.names())
+    }
+
+    @Test
+    fun `a saved location that is gone falls back to internal storage`() {
+        file("a.txt")
+        val card = sd(sdCard("photo.jpg"))
+        val saved = SavedStateHandle()
+        val before = viewModel(savedState = saved, locations = FakeLocations(listOf(internal, card)))
+        before.selectLocation(card.id)
+
+        val after = viewModel(savedState = saved, locations = FakeLocations(listOf(internal)))
+
+        assertEquals("local", after.state.value.selectedLocationId)
+        assertEquals(listOf("a.txt"), after.names())
+    }
+
+    @Test
+    fun `with no locations at all the screen reports not found`() {
+        val vm = viewModel(locations = FakeLocations(emptyList()))
+
+        assertEquals(Listing.Failed(Failure.NotFound), vm.state.value.listing)
     }
 }
