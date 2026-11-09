@@ -59,13 +59,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import coil.ImageLoader
+import coil.compose.AsyncImage
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.klongshore.filelistorama.domain.Entry
 import com.klongshore.filelistorama.domain.EntryKind
+import com.klongshore.filelistorama.domain.FileSource
 import com.klongshore.filelistorama.domain.SortKey
 import com.klongshore.filelistorama.domain.ViewMode
 import com.klongshore.filelistorama.domain.ViewSettings
@@ -89,6 +95,15 @@ fun BrowserScreen(
     BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
 
     val context = LocalContext.current
+    val imageLoader = remember(context) {
+        ImageLoader.Builder(context)
+            .components {
+                add(ThumbnailKeyer(), ThumbnailModel::class.java)
+                add(ThumbnailFetcher.Factory(), ThumbnailModel::class.java)
+            }
+            .build()
+    }
+    val sources = state.locations.associate { it.id to it.source }
     LaunchedEffect(viewModel) {
         viewModel.events.collect { event ->
             when (event) {
@@ -161,9 +176,9 @@ fun BrowserScreen(
                             Centered { Text("This folder is empty") }
                         } else {
                             if (state.settings.viewMode == ViewMode.Grid) {
-                            EntryGrid(listing.entries, onOpen = viewModel::open)
+                            EntryGrid(listing.entries, sources, imageLoader, onOpen = viewModel::open)
                         } else {
-                            EntryList(listing.entries, onOpen = viewModel::open)
+                            EntryList(listing.entries, sources, imageLoader, onOpen = viewModel::open)
                         }
                         }
                 }
@@ -228,7 +243,12 @@ private fun SortKey.label() = when (this) {
 }
 
 @Composable
-private fun EntryGrid(entries: List<Entry>, onOpen: (Entry) -> Unit) {
+private fun EntryGrid(
+    entries: List<Entry>,
+    sources: Map<String, FileSource>,
+    imageLoader: ImageLoader,
+    onOpen: (Entry) -> Unit,
+) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 104.dp),
         modifier = Modifier.fillMaxSize(),
@@ -243,11 +263,7 @@ private fun EntryGrid(entries: List<Entry>, onOpen: (Entry) -> Unit) {
                     .padding(8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Icon(
-                    imageVector = entryIcon(entry),
-                    contentDescription = null,
-                    modifier = Modifier.size(56.dp),
-                )
+                EntryImage(entry, sources, imageLoader, Modifier.size(56.dp))
                 Text(
                     entry.name,
                     maxLines = 2,
@@ -260,11 +276,41 @@ private fun EntryGrid(entries: List<Entry>, onOpen: (Entry) -> Unit) {
     }
 }
 
+/** A thumbnail for images that have one, otherwise (or while loading, or on error) the type icon. */
+@Composable
+private fun EntryImage(
+    entry: Entry,
+    sources: Map<String, FileSource>,
+    imageLoader: ImageLoader,
+    modifier: Modifier = Modifier,
+) {
+    val icon = rememberVectorPainter(entryIcon(entry))
+    val source = sources[entry.ref.sourceId]
+    if (entry.hasThumbnail && source != null) {
+        AsyncImage(
+            model = ThumbnailModel(entry, source),
+            imageLoader = imageLoader,
+            contentDescription = null,
+            placeholder = icon,
+            error = icon,
+            contentScale = ContentScale.Crop,
+            modifier = modifier.clip(MaterialTheme.shapes.small),
+        )
+    } else {
+        Icon(painter = icon, contentDescription = null, modifier = modifier)
+    }
+}
+
 private fun entryIcon(entry: Entry): ImageVector =
     if (entry.kind == EntryKind.Folder) Icons.Outlined.Folder else Icons.AutoMirrored.Outlined.InsertDriveFile
 
 @Composable
-private fun EntryList(entries: List<Entry>, onOpen: (Entry) -> Unit) {
+private fun EntryList(
+    entries: List<Entry>,
+    sources: Map<String, FileSource>,
+    imageLoader: ImageLoader,
+    onOpen: (Entry) -> Unit,
+) {
     val context = LocalContext.current
     val dateFormat = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
     LazyColumn(Modifier.fillMaxSize()) {
@@ -277,7 +323,7 @@ private fun EntryList(entries: List<Entry>, onOpen: (Entry) -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Icon(imageVector = entryIcon(entry), contentDescription = null)
+                EntryImage(entry, sources, imageLoader, Modifier.size(40.dp))
                 Column(Modifier.weight(1f)) {
                     Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     val size = entry.sizeBytes?.let { Formatter.formatFileSize(context, it) }
