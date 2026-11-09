@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.klongshore.filelistorama.domain.BrowserPreferences
 import com.klongshore.filelistorama.domain.SortKey
+import com.klongshore.filelistorama.domain.ViewMode
 import com.klongshore.filelistorama.domain.ViewSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -28,6 +29,7 @@ class DataStoreBrowserPreferences(
             prefs[SORT_KEY] = next.sortKey.name
             prefs[ASCENDING] = next.ascending
             prefs[SHOW_HIDDEN] = next.showHidden
+            prefs[VIEW_MODE] = next.viewMode.name
         }
     }
 
@@ -36,11 +38,14 @@ class DataStoreBrowserPreferences(
             ?: SortKey.Name,
         ascending = this[ASCENDING] ?: true,
         showHidden = this[SHOW_HIDDEN] ?: false,
+        viewMode = this[VIEW_MODE]?.let { name -> ViewMode.entries.firstOrNull { it.name == name } }
+            ?: ViewMode.List,
     )
 
     private companion object {
         val SORT_KEY = stringPreferencesKey("sort_key")
         val ASCENDING = booleanPreferencesKey("sort_ascending")
         val SHOW_HIDDEN = booleanPreferencesKey("show_hidden")
+        val VIEW_MODE = stringPreferencesKey("view_mode")
     }
 }

@@ -7,19 +7,26 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
+import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Storage
@@ -51,6 +58,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -58,6 +67,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.klongshore.filelistorama.domain.Entry
 import com.klongshore.filelistorama.domain.EntryKind
 import com.klongshore.filelistorama.domain.SortKey
+import com.klongshore.filelistorama.domain.ViewMode
 import com.klongshore.filelistorama.domain.ViewSettings
 import kotlinx.coroutines.launch
 import java.text.DateFormat
@@ -120,6 +130,13 @@ fun BrowserScreen(
                     Icon(Icons.Outlined.Menu, contentDescription = "Locations")
                 }
                 Breadcrumbs(state.crumbs, onSelect = viewModel::navigateTo, modifier = Modifier.weight(1f))
+                val grid = state.settings.viewMode == ViewMode.Grid
+                IconButton(onClick = { viewModel.setViewMode(if (grid) ViewMode.List else ViewMode.Grid) }) {
+                    Icon(
+                        imageVector = if (grid) Icons.AutoMirrored.Outlined.ViewList else Icons.Outlined.GridView,
+                        contentDescription = if (grid) "Switch to list" else "Switch to grid",
+                    )
+                }
                 ViewMenu(
                     settings = state.settings,
                     onSort = viewModel::setSort,
@@ -143,7 +160,11 @@ fun BrowserScreen(
                         if (listing.entries.isEmpty()) {
                             Centered { Text("This folder is empty") }
                         } else {
+                            if (state.settings.viewMode == ViewMode.Grid) {
+                            EntryGrid(listing.entries, onOpen = viewModel::open)
+                        } else {
                             EntryList(listing.entries, onOpen = viewModel::open)
+                        }
                         }
                 }
             }
@@ -207,6 +228,42 @@ private fun SortKey.label() = when (this) {
 }
 
 @Composable
+private fun EntryGrid(entries: List<Entry>, onOpen: (Entry) -> Unit) {
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(minSize = 104.dp),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        items(entries, key = { it.ref.itemId }) { entry ->
+            Column(
+                modifier = Modifier
+                    .clickable { onOpen(entry) }
+                    .padding(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Icon(
+                    imageVector = entryIcon(entry),
+                    contentDescription = null,
+                    modifier = Modifier.size(56.dp),
+                )
+                Text(
+                    entry.name,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+}
+
+private fun entryIcon(entry: Entry): ImageVector =
+    if (entry.kind == EntryKind.Folder) Icons.Outlined.Folder else Icons.AutoMirrored.Outlined.InsertDriveFile
+
+@Composable
 private fun EntryList(entries: List<Entry>, onOpen: (Entry) -> Unit) {
     val context = LocalContext.current
     val dateFormat = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
@@ -220,14 +277,7 @@ private fun EntryList(entries: List<Entry>, onOpen: (Entry) -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Icon(
-                    imageVector = if (entry.kind == EntryKind.Folder) {
-                        Icons.Outlined.Folder
-                    } else {
-                        Icons.AutoMirrored.Outlined.InsertDriveFile
-                    },
-                    contentDescription = null,
-                )
+                Icon(imageVector = entryIcon(entry), contentDescription = null)
                 Column(Modifier.weight(1f)) {
                     Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     val size = entry.sizeBytes?.let { Formatter.formatFileSize(context, it) }
