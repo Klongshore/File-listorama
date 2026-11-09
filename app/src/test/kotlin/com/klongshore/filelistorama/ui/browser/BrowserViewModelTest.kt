@@ -1,7 +1,10 @@
 package com.klongshore.filelistorama.ui.browser
 
 import com.klongshore.filelistorama.data.local.LocalFileSource
+import com.klongshore.filelistorama.domain.BrowserPreferences
 import com.klongshore.filelistorama.domain.Entry
+import com.klongshore.filelistorama.domain.SortKey
+import com.klongshore.filelistorama.domain.ViewSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -41,8 +44,9 @@ class BrowserViewModelTest {
         File(root, path).apply { parentFile?.mkdirs() }.writeText(content)
     }
 
-    private fun viewModel() = BrowserViewModel(
+    private fun viewModel(prefs: BrowserPreferences = InMemoryBrowserPreferences()) = BrowserViewModel(
         LocalFileSource(root, displayName = "Internal storage", io = Dispatchers.Unconfined),
+        prefs,
     )
 
     private fun BrowserViewModel.entries(): List<Entry> =
@@ -160,5 +164,135 @@ class BrowserViewModelTest {
 
         File(root, "locked").setReadable(true)
         assertEquals(Listing.Failed(Failure.PermissionDenied), vm.state.value.listing)
+    }
+
+    // --- sorting and hidden files ---
+
+    private fun BrowserViewModel.names() = entries().map { it.name }
+
+    private fun fileOfSize(path: String, bytes: Int) = file(path, "x".repeat(bytes))
+
+    private fun touch(path: String, millis: Long) {
+        File(root, path).setLastModified(millis)
+    }
+
+    @Test
+    fun `sorting by name descending reverses each group but keeps folders first`() {
+        file("a.txt")
+        file("b.txt")
+        file("alpha/x")
+        file("zeta/x")
+        val vm = viewModel()
+
+        vm.setSort(SortKey.Name, ascending = false)
+
+        assertEquals(listOf("zeta", "alpha", "b.txt", "a.txt"), vm.names())
+    }
+
+    @Test
+    fun `name sorting ignores case`() {
+        file("banana.txt")
+        file("Apple.txt")
+        file("cherry.txt")
+
+        assertEquals(listOf("Apple.txt", "banana.txt", "cherry.txt"), viewModel().names())
+    }
+
+    @Test
+    fun `sorting by date orders files oldest first or newest first`() {
+        file("mid.txt")
+        file("old.txt")
+        file("new.txt")
+        touch("old.txt", 1_000_000_000_000L)
+        touch("mid.txt", 1_100_000_000_000L)
+        touch("new.txt", 1_200_000_000_000L)
+        val vm = viewModel()
+
+        vm.setSort(SortKey.Date, ascending = true)
+        assertEquals(listOf("old.txt", "mid.txt", "new.txt"), vm.names())
+
+        vm.setSort(SortKey.Date, ascending = false)
+        assertEquals(listOf("new.txt", "mid.txt", "old.txt"), vm.names())
+    }
+
+    @Test
+    fun `sorting by size orders files smallest first or largest first and folders stay first`() {
+        fileOfSize("big.bin", 300)
+        fileOfSize("small.bin", 10)
+        fileOfSize("medium.bin", 100)
+        file("folder/x")
+        val vm = viewModel()
+
+        vm.setSort(SortKey.Size, ascending = true)
+        assertEquals(listOf("folder", "small.bin", "medium.bin", "big.bin"), vm.names())
+
+        vm.setSort(SortKey.Size, ascending = false)
+        assertEquals(listOf("folder", "big.bin", "medium.bin", "small.bin"), vm.names())
+    }
+
+    @Test
+    fun `hidden files are not shown by default`() {
+        file(".secret")
+        file(".hiddenfolder/x")
+        file("visible.txt")
+
+        assertEquals(listOf("visible.txt"), viewModel().names())
+    }
+
+    @Test
+    fun `turning on show hidden reveals them and turning it off hides them again`() {
+        file(".secret")
+        file("visible.txt")
+        val vm = viewModel()
+
+        vm.setShowHidden(true)
+        assertEquals(listOf(".secret", "visible.txt"), vm.names())
+
+        vm.setShowHidden(false)
+        assertEquals(listOf("visible.txt"), vm.names())
+    }
+
+    @Test
+    fun `changing a setting updates the visible list without reopening the folder`() {
+        file("a.txt")
+        file("b.txt")
+        val vm = viewModel()
+        assertEquals(listOf("a.txt", "b.txt"), vm.names())
+
+        vm.setSort(SortKey.Name, ascending = false)
+
+        assertEquals(listOf("b.txt", "a.txt"), vm.names())
+        assertEquals(SortKey.Name, vm.state.value.settings.sortKey)
+        assertFalse(vm.state.value.settings.ascending)
+    }
+
+    @Test
+    fun `settings chosen in one session are applied in the next`() {
+        file(".secret")
+        file("a.txt")
+        file("b.txt")
+        val prefs = InMemoryBrowserPreferences()
+        val first = viewModel(prefs)
+        first.setSort(SortKey.Name, ascending = false)
+        first.setShowHidden(true)
+
+        val second = viewModel(prefs)
+
+        assertEquals(listOf("b.txt", "a.txt", ".secret"), second.names())
+        assertEquals(ViewSettings(SortKey.Name, ascending = false, showHidden = true), second.state.value.settings)
+    }
+
+    @Test
+    fun `sorting and hidden settings apply inside sub folders too`() {
+        file("sub/.hidden")
+        file("sub/a.txt")
+        file("sub/b.txt")
+        val vm = viewModel()
+        vm.setSort(SortKey.Name, ascending = false)
+        vm.setShowHidden(true)
+
+        vm.open(vm.entry("sub"))
+
+        assertEquals(listOf("b.txt", "a.txt", ".hidden"), vm.names())
     }
 }
